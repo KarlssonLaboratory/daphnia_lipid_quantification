@@ -1,11 +1,6 @@
 library(tidyverse)
 library(readxl)
 
-if (!require(dunn.test)) {
-  install.packages("dunn.test")
-  library(dunn.test)
-}
-
 if (!require(emmeans)) {
   install.packages("emmeans")
   library(emmeans)
@@ -48,14 +43,52 @@ load_experiment <- function(experiment) {
   return(data)
 }
 
-response <- c("droplet_intensity_total",
-              "droplet_area_total",
-              "daphnia_size")
+response <- tibble::tibble(
+  response = c("droplet_intensity_total", "droplet_area_total", "daphnia_size"),
+  family   = list(gaussian(), gaussian(), gaussian(link = "log"))
+)
+
 
 analyze_experiment <- function(data, responses = response) {
-  
-  # iterate over requested response variables
-  for (resp in responses) {
+
+  # prepare experiment output dirs and a combined diagnostics PDF
+  experiment <- unique(data$experiment)
+  out_dir <- file.path("output", experiment)
+  dir.create(file.path(out_dir, "graphs"), recursive = TRUE, showWarnings = FALSE)
+  dir.create(file.path(out_dir, "results"), recursive = TRUE, showWarnings = FALSE)
+
+  diagnostics_pdf <- file.path(out_dir, "graphs", paste0("responses_and_diagnostics.pdf"))
+  pdf(diagnostics_pdf, width = 12, height = 6, onefile = TRUE)
+
+  # histograms for all requested responses (one page each)
+  for (r in responses$response) {
+    if (r %in% names(data) && is.numeric(data[[r]])) {
+      hist(data[[r]], main = paste(experiment, "-", r), xlab = r, col = "grey", breaks = 30)
+    } else if (r %in% names(data)) {
+      counts <- table(data[[r]])
+      barplot(counts, main = paste(experiment, "-", r), xlab = r)
+    }
+  }
+
+  for (i in seq_len(nrow(responses))) {
+    resp <- responses$response[i]
+    fam  <- responses$family[[i]]   # use [[ ]] to get the actual family object
+
+    # derive family_obj: accept family objects, functions, or character expressions
+    if (is.character(fam)) {
+      family_obj <- tryCatch(
+        match.fun(fam)(),
+        error = function(e) {
+          tryCatch(eval(parse(text = fam)), error = function(e2) stop("Could not resolve family: ", fam))
+        }
+      )
+    } else if (inherits(fam, "family")) {
+      family_obj <- fam
+    } else if (is.function(fam)) {
+      family_obj <- fam()
+    } else {
+      family_obj <- fam
+    }
     
     # build formulas depending on chem_treatment presence
     if (length(unique(data$chem_treatment)) > 1) {
@@ -72,7 +105,7 @@ analyze_experiment <- function(data, responses = response) {
       emmeans_formula_replicates <- as.formula("~ food_treatment + replicate")
     }
 
-    glm_replicates <- glm(formula_replicates, family = gaussian, data = data)
+    glm_replicates <- glm(formula_replicates, family = family_obj, data = data)
     anodev_replicates <- anova(glm_replicates, test = "F")
     emmeans_replicates <- emmeans(glm_replicates, emmeans_formula_replicates)
     pairs_comparisons_replicates <- pairs(emmeans_replicates, adjust = "BH")
@@ -148,7 +181,7 @@ analyze_experiment <- function(data, responses = response) {
 
     ggsave(file.path(out_dir, "graphs", paste0(resp, "_by_replicate.pdf")), p1)
     
-    glm <- glm(formula, family = gaussian, data = data)
+    glm <- glm(formula, family = family_obj, data = data)
     anodev <- anova(glm, test = "F")
     emmeans_obj <- emmeans(glm, emmeans_formula)
     pairs_comparisons <- as.data.frame(pairs(emmeans_obj, adjust = "BH"))
@@ -213,7 +246,32 @@ analyze_experiment <- function(data, responses = response) {
     write.csv(pairs_comparisons_replicates_df, file.path(out_dir, "results", paste0(resp, "_pairs_replicates.csv")), row.names = FALSE)
     write.csv(pairs_comparisons, file.path(out_dir, "results", paste0(resp, "_pairs_treatment.csv")), row.names = FALSE)
 
+    # append GLM diagnostic plots to the combined PDF using DHARMa
+    if (exists("glm") && inherits(glm, "glm")) {
+      if (!require(DHARMa, quietly = TRUE)) {
+        install.packages("DHARMa")
+        library(DHARMa)
+      }
+      res_sim <- try(simulateResiduals(fittedModel = glm, plot = FALSE), silent = TRUE)
+      if (!inherits(res_sim, "try-error")) {
+        op <- par(no.readonly = TRUE)
+        par(oma = c(0, 0, 3, 0))
+        try(plot(res_sim))
+        mtext(paste("Response:", resp, "| Family:", family_obj$family, "| Link:", family_obj$link), outer = TRUE, cex = 1.1)
+        par(op)
+      } else {
+        # fallback to basic diagnostic plots if DHARMa simulation fails
+        op <- par(no.readonly = TRUE)
+        par(mfrow = c(2, 2))
+        try(plot(glm))
+        par(op)
+      }
+    }
+
   } # end for resp
+
+  # close diagnostics PDF
+  dev.off()
 
   cat("\n---", unique(data$experiment), "done ---\n")
 
