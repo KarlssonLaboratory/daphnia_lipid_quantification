@@ -39,15 +39,56 @@ load_experiment <- function(experiment) {
   data$food_treatment <- factor(data$food_treatment, levels = c("no food", "low food", "high food"))
   data$chem_treatment <- factor(data$chem_treatment)
 
+  # Load and enrich droplet data
+  masks_dirs <- list.dirs(data_dir, full.names = TRUE, recursive = FALSE)
+  masks_dirs <- masks_dirs[grepl("masks_", basename(masks_dirs))]
+  
+  droplet_data <- map_dfr(masks_dirs, function(masks_dir) {
+    rep_id <- sub(".*masks_(\\d+)", "\\1", basename(masks_dir))
+    mask_files <- list.files(masks_dir, pattern = "_droplets\\.csv$", full.names = TRUE)
+    
+    map_dfr(mask_files, function(f) {
+      df <- tryCatch(
+        read.csv(f),
+        error = function(e) data.frame()
+      )
+      
+      # Skip empty files
+      if (nrow(df) == 0) {
+        return(data.frame())
+      }
+      
+      # Extract well name from filename
+      well_name <- sub("^([A-Z]\\d+)_.*", "\\1", basename(f))
+      df$well_name <- well_name
+      df$replicate <- rep_id
+      df$experiment <- experiment
+      df
+    })
+  })
+  
+  # Join treatment information to droplet data
+  if (nrow(droplet_data) > 0) {
+    droplet_data <- droplet_data |>
+      mutate(well_letter = substr(well_name, 1, 1), replicate = as.factor(replicate)) |>
+      inner_join(treatment, by = c("well_letter" = "well", "replicate"))
+    
+    droplet_data$food_treatment <- factor(droplet_data$food_treatment, levels = c("no food", "low food", "high food"))
+    droplet_data$chem_treatment <- factor(droplet_data$chem_treatment)
+    
+    # Attach droplet_data to the environment for access after load_experiment
+    assign("droplet_data", droplet_data, envir = .GlobalEnv)
+  }
 
   return(data)
 }
 
-response <- tibble::tibble(
-  response = c("droplet_intensity_total", "droplet_area_total", "daphnia_size"),
-  family   = list(gaussian(), gaussian(), gaussian(link = "log"))
-)
 
+
+response <- tibble::tibble(
+  response = c("droplet_intensity_total", "droplet_area_total", "daphnia_size", "num_droplets"),
+  family   = list(gaussian(), gaussian(), gaussian(), quasipoisson())
+)
 
 analyze_experiment <- function(data, responses = response) {
 
@@ -170,7 +211,7 @@ analyze_experiment <- function(data, responses = response) {
         aes(x = (x1_num + x2_num) / 2, y = y_position + y_range * 0.03, label = stars),
         inherit.aes = FALSE, color = "black", size = 4
       ) +
-      facet_wrap(~ food_treatment) +
+      facet_wrap(~ factor(food_treatment, levels = c("no food", "low food", "high food"))) +
       scale_color_manual(values = c("no food" = "#F4A460",
                                     "low food" = "#4169E1",
                                     "high food" = "#2E8B57")) +
@@ -272,6 +313,190 @@ analyze_experiment <- function(data, responses = response) {
 
   # close diagnostics PDF
   dev.off()
+
+  # Analyze droplet data if available
+  if (exists("droplet_data") && nrow(droplet_data) > 0) {
+    
+    # Filter droplet data to current experiment
+    droplet_current <- droplet_data |>
+      filter(experiment == unique(data$experiment))
+    
+    if (nrow(droplet_current) > 0) {
+      
+      # GLM analysis for droplet area by replicate
+      if (length(unique(droplet_current$chem_treatment)) > 1) {
+        formula_droplets_rep <- as.formula("area ~ food_treatment * chem_treatment + replicate")
+        emmeans_formula_droplets_rep <- as.formula("~ food_treatment * chem_treatment + replicate")
+        
+        formula_droplets <- as.formula("area ~ food_treatment * chem_treatment")
+        emmeans_formula_droplets <- as.formula("~ food_treatment * chem_treatment")
+      } else {
+        formula_droplets_rep <- as.formula("area ~ food_treatment + replicate")
+        emmeans_formula_droplets_rep <- as.formula("~ food_treatment + replicate")
+        
+        formula_droplets <- as.formula("area ~ food_treatment")
+        emmeans_formula_droplets <- as.formula("~ food_treatment")
+      }
+      
+      glm_droplets_rep <- glm(formula_droplets_rep, family = gaussian(), data = droplet_current)
+      emmeans_droplets_rep <- emmeans(glm_droplets_rep, emmeans_formula_droplets_rep)
+      pairs_droplets_rep <- pairs(emmeans_droplets_rep, adjust = "BH")
+      pairs_droplets_rep_df <- as.data.frame(pairs_droplets_rep)
+      
+      # Plot droplet area by replicate with significance
+      y_max_drop <- max(droplet_current$area, na.rm = TRUE)
+      y_range_drop <- diff(range(droplet_current$area, na.rm = TRUE))
+      
+      sig_data_drop_rep <- pairs_droplets_rep_df %>%
+        separate(contrast, into = c("group1_full", "group2_full"), sep = " - ", remove = FALSE) %>%
+        mutate(
+          treatment1 = str_extract(group1_full, "^(.+?)(?= replicate)", group = 1),
+          replicate1  = str_extract(group1_full, "replicate(\\d+)$", group = 1),
+          treatment2 = str_extract(group2_full, "^(.+?)(?= replicate)", group = 1),
+          replicate2  = str_extract(group2_full, "replicate(\\d+)$", group = 1)
+        ) %>%
+        filter(treatment1 == treatment2) %>%
+        rename(food_treatment = treatment1) %>%
+        mutate(stars = case_when(
+          p.value < 0.001 ~ "***",
+          p.value < 0.01  ~ "**",
+          p.value < 0.05  ~ "*",
+          TRUE            ~ "n.s."
+        )) %>%
+        mutate(
+          replicate1 = factor(replicate1, levels = levels(droplet_current$replicate)),
+          replicate2 = factor(replicate2, levels = levels(droplet_current$replicate)),
+          x1_num = as.numeric(replicate1),
+          x2_num = as.numeric(replicate2)
+        ) %>%
+        group_by(food_treatment) %>%
+        mutate(y_position = y_max_drop * (1.5 ^ row_number())) %>%
+        ungroup()
+      
+      p_droplet_rep <- ggplot(droplet_current, aes(x = replicate, y = area, color = food_treatment)) +
+        geom_violin() +
+        stat_summary(fun = median, geom = "crossbar", width = 0.5,
+                     color = "black", linewidth = 0.3) +
+        geom_segment(
+          data = sig_data_drop_rep,
+          aes(x = x1_num, xend = x2_num, y = y_position, yend = y_position),
+          inherit.aes = FALSE, color = "black"
+        ) +
+        geom_segment(
+          data = sig_data_drop_rep,
+          aes(x = x1_num, xend = x1_num, y = y_position, yend = y_position - y_range_drop * 0.02),
+          inherit.aes = FALSE, color = "black"
+        ) +
+        geom_segment(
+          data = sig_data_drop_rep,
+          aes(x = x2_num, xend = x2_num, y = y_position, yend = y_position - y_range_drop * 0.02),
+          inherit.aes = FALSE, color = "black"
+        ) +
+        geom_text(
+          data = sig_data_drop_rep,
+          aes(x = (x1_num + x2_num) / 2, y = y_position + y_range_drop * 0.3, label = stars),
+          inherit.aes = FALSE, color = "black", size = 4
+        ) +
+        facet_wrap(~ factor(food_treatment, levels = c("no food", "low food", "high food"))) +
+        scale_color_manual(values = c("no food" = "#F4A460",
+                                      "low food" = "#4169E1",
+                                      "high food" = "#2E8B57")) +
+        scale_x_discrete(labels = c("1" = "I", "2" = "II", "3" = "III")) +
+        scale_y_log10(expand = expansion(mult = c(0.05, 0.02))) +
+        labs(y = "area (log10)", x = NULL, title = paste(unique(data$experiment), "- droplet area by replicate")) +
+        theme_bw()
+      
+      ggsave(file.path(out_dir, "graphs", "individual_droplets_by_replicate.pdf"), p_droplet_rep)
+      
+      # GLM analysis for droplet area by treatment
+      glm_droplets <- glm(formula_droplets, family = gaussian(), data = droplet_current)
+      emmeans_droplets <- emmeans(glm_droplets, emmeans_formula_droplets)
+      pairs_droplets <- as.data.frame(pairs(emmeans_droplets, adjust = "BH"))
+      
+      y_max_drop2 <- max(droplet_current$area, na.rm = TRUE)
+      y_range_drop2 <- diff(range(droplet_current$area, na.rm = TRUE))
+      
+      treatment_levels_drop <- levels(droplet_current$food_treatment)
+      
+      sig_data_drop2 <- pairs_droplets %>%
+        separate(contrast, into = c("group1_full", "group2_full"), sep = " - ", remove = FALSE) %>%
+        mutate(
+          stars = case_when(
+            p.value < 0.001 ~ "***",
+            p.value < 0.01  ~ "**",
+            p.value < 0.05  ~ "*",
+            TRUE            ~ "n.s."
+          ),
+          group1_full = factor(group1_full, levels = treatment_levels_drop),
+          group2_full = factor(group2_full, levels = treatment_levels_drop),
+          x1_num = as.numeric(group1_full),
+          x2_num = as.numeric(group2_full)
+        ) %>%
+        group_by() %>%
+        mutate(y_position = y_max_drop2 * (1.5 ^ row_number())) %>%
+        ungroup()
+      
+      bracket_step_drop <- y_range_drop2 * 0.08
+      tick_length_drop  <- bracket_step_drop * 0.25
+      
+      summary_stats_drop <- droplet_current |>
+        group_by(food_treatment) |>
+        summarize(
+          n = n(),
+          median_area = median(area),
+          mean_area = mean(area),
+          .groups = "drop"
+        )
+      
+      p_droplet_treat <- ggplot(droplet_current, aes(x = food_treatment, y = area)) +
+        geom_violin() +
+        stat_summary(fun = median, geom = "crossbar", width = 0.4, linewidth = 0.3) +
+        geom_segment(
+          data = sig_data_drop2,
+          aes(x = x1_num, xend = x2_num, y = y_position, yend = y_position),
+          inherit.aes = FALSE, color = "black"
+        ) +
+        geom_segment(
+          data = sig_data_drop2,
+          aes(x = x1_num, xend = x1_num, y = y_position, yend = y_position - tick_length_drop),
+          inherit.aes = FALSE, color = "black"
+        ) +
+        geom_segment(
+          data = sig_data_drop2,
+          aes(x = x2_num, xend = x2_num, y = y_position, yend = y_position - tick_length_drop),
+          inherit.aes = FALSE, color = "black"
+        ) +
+        geom_text(
+          data = sig_data_drop2,
+          aes(x = (x1_num + x2_num) / 2, y = y_position * 1.2, label = stars),
+          inherit.aes = FALSE, color = "black", size = 4
+        ) +
+        geom_text(
+          data = summary_stats_drop,
+          aes(
+            x = food_treatment,
+            y = Inf,
+            label = paste0(
+              "n = ", n, "\n",
+              "Med = ", round(median_area, 1), "\n",
+              "Mean = ", round(mean_area, 1)
+            )
+          ),
+          vjust = 1.2,
+          size = 3
+        ) +
+        scale_x_discrete(labels = c("no food" = "NF", "low food" = "LF", "high food" = "HF")) +
+        scale_y_log10(expand = expansion(mult = c(0.05, 0.15))) +
+        labs(y = "area (log10)", x = NULL, title = paste(unique(data$experiment), "- droplet area by treatment")) +
+        theme_bw()
+      
+      ggsave(file.path(out_dir, "graphs", "individual_droplets_by_treatment.pdf"), p_droplet_treat)
+      
+      # Save results
+      write.csv(pairs_droplets_rep_df, file.path(out_dir, "results", "individual_droplet_area_pairs_replicates.csv"), row.names = FALSE)
+      write.csv(pairs_droplets, file.path(out_dir, "results", "individual_droplet_area_pairs_treatment.csv"), row.names = FALSE)
+    }
+  }
 
   cat("\n---", unique(data$experiment), "done ---\n")
 
