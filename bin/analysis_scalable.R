@@ -87,7 +87,7 @@ load_experiment <- function(experiment) {
 
 response <- tibble::tibble(
   response = c("droplet_intensity_total", "droplet_area_total", "daphnia_size", "num_droplets"),
-  family   = list(gaussian(), gaussian(), gaussian(), quasipoisson())
+  family   = list(gaussian(), gaussian(), gaussian(), "negbin")
 )
 
 analyze_experiment <- function(data, responses = response) {
@@ -115,22 +115,27 @@ analyze_experiment <- function(data, responses = response) {
     resp <- responses$response[i]
     fam  <- responses$family[[i]]   # use [[ ]] to get the actual family object
 
-    # derive family_obj: accept family objects, functions, or character expressions
-    if (is.character(fam)) {
-      family_obj <- tryCatch(
-        match.fun(fam)(),
-        error = function(e) {
-          tryCatch(eval(parse(text = fam)), error = function(e2) stop("Could not resolve family: ", fam))
-        }
-      )
-    } else if (inherits(fam, "family")) {
-      family_obj <- fam
-    } else if (is.function(fam)) {
-      family_obj <- fam()
-    } else {
-      family_obj <- fam
-    }
-    
+    # Check for negbin before any resolution attempt
+  is_negbin <- (is.character(fam) && fam == "negbin")
+
+  # derive family_obj: accept family objects, functions, or character expressions
+  if (is_negbin) {
+    family_obj <- "negbin"  # keep as sentinel; fit_glm will handle it
+  } else if (is.character(fam)) {
+    family_obj <- tryCatch(
+      match.fun(fam)(),
+      error = function(e) {
+        tryCatch(eval(parse(text = fam)), error = function(e2) stop("Could not resolve family: ", fam))
+      }
+    )
+  } else if (inherits(fam, "family")) {
+    family_obj <- fam
+  } else if (is.function(fam)) {
+    family_obj <- fam()
+  } else {
+    family_obj <- fam
+  }
+      
     # build formulas depending on chem_treatment presence
     if (length(unique(data$chem_treatment)) > 1) {
       formula <- as.formula(paste(resp, "~ food_treatment * chem_treatment"))
@@ -146,7 +151,17 @@ analyze_experiment <- function(data, responses = response) {
       emmeans_formula_replicates <- as.formula("~ food_treatment + replicate")
     }
 
-    glm_replicates <- glm(formula_replicates, family = family_obj, data = data)
+    fit_glm <- function(formula, family_obj, data, is_negbin = FALSE) {
+      if (is_negbin) {
+        if (!requireNamespace("MASS", quietly = TRUE)) install.packages("MASS")
+        MASS::glm.nb(formula, data = data)
+      } else {
+        glm(formula, family = family_obj, data = data)
+      }
+    }
+
+
+    glm_replicates <- fit_glm(formula_replicates, family_obj, data, is_negbin)
     anodev_replicates <- anova(glm_replicates, test = "F")
     emmeans_replicates <- emmeans(glm_replicates, emmeans_formula_replicates)
     pairs_comparisons_replicates <- pairs(emmeans_replicates, adjust = "BH")
@@ -222,7 +237,7 @@ analyze_experiment <- function(data, responses = response) {
 
     ggsave(file.path(out_dir, "graphs", paste0(resp, "_by_replicate.pdf")), p1)
     
-    glm <- glm(formula, family = family_obj, data = data)
+    glm <- fit_glm(formula, family_obj, data, is_negbin)
     anodev <- anova(glm, test = "F")
     emmeans_obj <- emmeans(glm, emmeans_formula)
     pairs_comparisons <- as.data.frame(pairs(emmeans_obj, adjust = "BH"))
@@ -298,7 +313,12 @@ analyze_experiment <- function(data, responses = response) {
         op <- par(no.readonly = TRUE)
         par(oma = c(0, 0, 3, 0))
         try(plot(res_sim))
-        mtext(paste("Response:", resp, "| Family:", family_obj$family, "| Link:", family_obj$link), outer = TRUE, cex = 1.1)
+        fam_label <- if (is.character(family_obj) && family_obj == "negbin") {
+          "negbin | log"
+        } else {
+          paste(family_obj$family, "|", family_obj$link)
+        }
+        mtext(paste("Response:", resp, "| Family:", fam_label), outer = TRUE, cex = 1.1)
         par(op)
       } else {
         # fallback to basic diagnostic plots if DHARMa simulation fails
