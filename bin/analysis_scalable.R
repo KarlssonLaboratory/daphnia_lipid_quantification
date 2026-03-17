@@ -11,9 +11,9 @@ load_experiment <- function(experiment) {
   data_dir <- file.path("data", experiment)
   
   # Load well labels
-  well_files <- list.files(data_dir, pattern = paste0(experiment, ".*_wells\\.xlsx"), full.names = TRUE)
+  well_files <- list.files(data_dir, pattern = paste0(".*_wells\\.xlsx"), full.names = TRUE)
   treatment <- map_dfr(well_files, function(f) {
-    rep_id <- sub(paste0(".*", experiment, "_(.*)\\_wells\\.xlsx"), "\\1", basename(f))
+    rep_id <- sub(".*measures_export_(.*)\\_wells\\.xlsx", "\\1", basename(f))
     df <- read_excel(f, col_names = TRUE)
     df$replicate <- rep_id  
     df
@@ -21,9 +21,9 @@ load_experiment <- function(experiment) {
   treatment$replicate <- as.factor(treatment$replicate)
   
   # Load data
-  data_files <- list.files(data_dir, pattern = paste0(experiment, ".*\\.csv"), full.names = TRUE)
+  data_files <- list.files(data_dir, pattern = paste0(".*\\.csv"), full.names = TRUE)
   data <- map_dfr(data_files, function(f) {
-    rep_id <- sub(paste0(".*", experiment, "_(.*)\\.csv"), "\\1", basename(f))
+    rep_id <- sub("measures_export_(\\d+)\\.csv", "\\1", basename(f))
     df <- read.csv(f)
     df$replicate <- rep_id  
     df$experiment <- experiment
@@ -137,19 +137,16 @@ analyze_experiment <- function(data, responses = response) {
   }
       
     # build formulas depending on chem_treatment presence
-    if (length(unique(data$chem_treatment)) > 1) {
-      formula <- as.formula(paste(resp, "~ food_treatment * chem_treatment"))
-      emmeans_formula <- as.formula("~ food_treatment * chem_treatment")
+    has_chem  <- length(unique(data$chem_treatment)) > 1
+    has_reps  <- length(unique(data$replicate)) > 1
 
-      formula_replicates <- as.formula(paste(resp, "~ food_treatment * chem_treatment + replicate"))
-      emmeans_formula_replicates <- as.formula("~ food_treatment * chem_treatment + replicate")
-    } else {
-      formula <- as.formula(paste(resp, "~ food_treatment"))
-      emmeans_formula <- as.formula("~ food_treatment")
+    base_terms    <- if (has_chem) "food_treatment * chem_treatment" else "food_treatment"
+    rep_terms     <- if (has_reps) paste(base_terms, "+ replicate")  else base_terms
 
-      formula_replicates <- as.formula(paste(resp, "~ food_treatment + replicate"))
-      emmeans_formula_replicates <- as.formula("~ food_treatment + replicate")
-    }
+    formula                  <- as.formula(paste(resp, "~", base_terms))
+    emmeans_formula          <- as.formula(paste("~", base_terms))
+    formula_replicates       <- as.formula(paste(resp, "~", rep_terms))
+    emmeans_formula_replicates <- as.formula(paste("~", rep_terms))
 
     fit_glm <- function(formula, family_obj, data, is_negbin = FALSE) {
       if (is_negbin) {
@@ -344,19 +341,20 @@ analyze_experiment <- function(data, responses = response) {
     if (nrow(droplet_current) > 0) {
       
       # GLM analysis for droplet area by replicate
-      if (length(unique(droplet_current$chem_treatment)) > 1) {
-        formula_droplets_rep <- as.formula("area ~ food_treatment * chem_treatment + replicate")
-        emmeans_formula_droplets_rep <- as.formula("~ food_treatment * chem_treatment + replicate")
-        
-        formula_droplets <- as.formula("area ~ food_treatment * chem_treatment")
-        emmeans_formula_droplets <- as.formula("~ food_treatment * chem_treatment")
-      } else {
-        formula_droplets_rep <- as.formula("area ~ food_treatment + replicate")
-        emmeans_formula_droplets_rep <- as.formula("~ food_treatment + replicate")
-        
-        formula_droplets <- as.formula("area ~ food_treatment")
-        emmeans_formula_droplets <- as.formula("~ food_treatment")
-      }
+      
+      has_chem  <- length(unique(droplet_data$chem_treatment)) > 1
+      has_reps  <- length(unique(droplet_data$replicate)) > 1
+
+      base_terms    <- if (has_chem) "food_treatment * chem_treatment" else "food_treatment"
+      rep_terms     <- if (has_reps) paste(base_terms, "+ replicate")  else base_terms
+
+      formula_droplets <- as.formula(paste("area ~", base_terms))
+      emmeans_formula_droplets <- as.formula(paste("~", base_terms))
+      
+      formula_droplets_rep <- as.formula(paste("area ~", rep_terms))
+      emmeans_formula_droplets_rep <- as.formula(paste("~", rep_terms))
+      
+      
       
       glm_droplets_rep <- glm(formula_droplets_rep, family = gaussian(), data = droplet_current)
       emmeans_droplets_rep <- emmeans(glm_droplets_rep, emmeans_formula_droplets_rep)
