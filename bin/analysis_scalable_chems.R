@@ -436,6 +436,8 @@ analyze_experiment <- function(data, responses = response) {
     is_negbin  <- is.character(fam) && fam == "negbin"
     family_obj <- resolve_family(fam)
 
+    message(sprintf("[%d/%d] Analyzing response: %s", i, nrow(responses), resp))
+
     # Build the four formulas needed for this response
     fmls <- build_formulas(resp, data)
 
@@ -467,6 +469,7 @@ analyze_experiment <- function(data, responses = response) {
         width         = 0.5
       ) +
       geom_jitter(
+        aes(colour = factor(replicate)),
         position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.6),
         size     = 2, alpha = 0.6
       ) +
@@ -492,10 +495,12 @@ analyze_experiment <- function(data, responses = response) {
         labels = c("no food" = "NF", "low food" = "LF", "high food" = "HF")
       ) +
       scale_y_continuous(expand = expansion(mult = c(0.05, 0.1))) +
+      scale_colour_viridis_d(option = "inferno") +
       labs(
         y     = resp,
         x     = NULL,
         title = paste(experiment, "-", resp),
+        color  = "Replicate",
         subtitle = paste(paste(deparse(fmls$main), collapse = ""), "| family:", if (is_negbin) "negbin | log" else paste(family_obj$family, "|", family_obj$link))
       ) +
       theme_bw()
@@ -619,7 +624,9 @@ analyze_experiment <- function(data, responses = response) {
     labs(
       y     = "area (log10)",
       x     = NULL,
-      title = paste(experiment, "- droplet area by treatment")
+      colour   = "Replicate",
+      title = paste(experiment, "- droplet area by treatment"),
+      subtitle = paste(paste(deparse(fmls$main), collapse = ""), "| family:", if (is_negbin) "negbin | log" else paste(family_obj$family, "|", family_obj$link))
     ) +
     theme_bw()
 
