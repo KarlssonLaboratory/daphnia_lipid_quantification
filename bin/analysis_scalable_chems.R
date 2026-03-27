@@ -6,22 +6,27 @@
 # and writes diagnostic plots plus pairwise-comparison tables to disk.
 # =============================================================================
 
-# ── Dependencies ──────────────────────────────────────────────────────────────
-library(tidyverse)   # data wrangling + ggplot2
-library(readxl)      # read Excel well-label files
-library(multcomp)    # compact letter displays (cld)
-library(lme4)        # linear mixed-effects models (lmer)
-library(emmeans)     # estimated marginal means + pairwise contrasts
-library(DHARMa)      # simulation-based GLM/LMM residual diagnostics
-library(MASS)        # glm.nb (negative-binomial GLM)
+# ── Install and load dependencies ─────────────────────────────────────────────
 
-# Helper: install-and-load a package if it is not already available
-ensure_pkg <- function(pkg) {
-  if (!requireNamespace(pkg, quietly = TRUE)) install.packages(pkg)
+packages <- c(
+  "tidyverse",
+  "readxl",
+  "multcomp",
+  "lme4",
+  "emmeans",
+  "DHARMa",
+  "MASS",
+  "patchwork"
+)
+
+install_and_load <- function(pkg) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg, dependencies = TRUE)
+  }
   library(pkg, character.only = TRUE)
 }
-ensure_pkg("DHARMa")
-ensure_pkg("MASS")
+
+invisible(lapply(packages, install_and_load))
 
 
 # =============================================================================
@@ -296,8 +301,7 @@ make_histogram <- function(data, resp, experiment) {
   
   has_chem <- length(unique(df$chem_treatment)) > 1
   
-  if (!requireNamespace("patchwork", quietly = TRUE)) install.packages("patchwork")
-  library(patchwork)
+  
 
   # ── Panel A: overall ──────────────────────────────────────────────────────
   p_overall <- ggplot(df, aes(x = .data[[resp]])) +
