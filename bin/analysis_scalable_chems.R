@@ -640,7 +640,7 @@ analyze_experiment <- function(data, responses = response) {
 # Prompt the user to choose one experiment or process all at once.
 # =============================================================================
 all_experiments <- list.dirs("data", full.names = FALSE, recursive = FALSE)
-all_experiments <- all_experiments[!grepl("pilot", all_experiments, ignore.case = TRUE)]
+all_experiments <- all_experiments[!grepl("pilot", all_experiments, ignore.case = TRUE)] # Exclude pilot folders if present
 
 run_experiment <- select.list(
   c("ALL", all_experiments),
