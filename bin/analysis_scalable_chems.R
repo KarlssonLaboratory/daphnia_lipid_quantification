@@ -462,14 +462,14 @@ analyze_experiment <- function(data, responses = response) {
     y_max <- max(data[[resp]], na.rm = TRUE)
 
     p_main <- ggplot(data, aes(x = food_treatment, y = .data[[resp]],
-                               fill = chem_treatment)) +
+                               fill = chem_treatment, color = replicate)) +
       geom_boxplot(
         outlier.shape = NA,
         position      = position_dodge(width = 0.6),
-        width         = 0.5
+        width         = 0.5,
+        color         = "black"
       ) +
       geom_jitter(
-        aes(colour = factor(replicate)),
         position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.6),
         size     = 2, alpha = 0.6
       ) +
@@ -478,13 +478,16 @@ analyze_experiment <- function(data, responses = response) {
         geom     = "crossbar",
         position = position_dodge(width = 0.6),
         width    = 0.4,
-        linewidth = 0.3
+        linewidth = 0.3,
+        color    = "black"
       ) +
       # Compact letter display: groups that share a letter are not significantly
       # different after BH correction
       geom_text(
         data     = cld_df,
         aes(x = food_treatment, y = y_max, label = .group),
+        colour      = "black",
+        show.legend = FALSE,
         hjust    = 0.5,
         vjust    = -0.5,
         position = position_dodge(width = 0.6),
@@ -495,7 +498,6 @@ analyze_experiment <- function(data, responses = response) {
         labels = c("no food" = "NF", "low food" = "LF", "high food" = "HF")
       ) +
       scale_y_continuous(expand = expansion(mult = c(0.05, 0.1))) +
-      scale_colour_viridis_d(option = "inferno") +
       labs(
         y     = resp,
         x     = NULL,
@@ -503,6 +505,7 @@ analyze_experiment <- function(data, responses = response) {
         color  = "Replicate",
         subtitle = paste(paste(deparse(fmls$main), collapse = ""), "| family:", if (is_negbin) "negbin | log" else paste(family_obj$family, "|", family_obj$link))
       ) +
+      scale_color_brewer(palette = "Dark2") +
       theme_bw()
 
     ggsave(
