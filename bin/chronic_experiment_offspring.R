@@ -40,7 +40,8 @@ response <- tibble::tibble(
   response = c(
     "droplet_intensity_total",  # total lipid-droplet fluorescence intensity
     "droplet_area_total",       # summed area of all droplets per animal
-    "daphnia_size",             # body-size proxy (e.g. pixel area)
+    "daphnia_size",             # body-size 
+    "daphnia_area",             # body area 
     "num_droplets",             # raw count of detected droplets
     "num_droplets_per_area"     # count normalised by Daphnia body area
   ),
@@ -48,6 +49,7 @@ response <- tibble::tibble(
     Gamma(link = "log"),  # strictly positive, right-skewed intensity data
     gaussian(),           # area totals – approximately normal after logging
     gaussian(),           # size – approximately normal
+    gaussian(),           # area – approximately normal
     "negbin",             # count data with overdispersion
     Gamma(link = "log")   # ratio – strictly positive, right-skewed
   )
@@ -74,7 +76,7 @@ load_experiment <- function(experiment) {
 
   # ── 1. Load well-treatment labels ──────────────────────────────────────────
   # Each replicate has an Excel file "*_wells.xlsx" mapping well letter to
-  # food_treatment and `ug/L`.  We stack all replicates into one frame
+  # food_treatment and ugL.  We stack all replicates into one frame
   # and retain the replicate ID as a factor.
   well_files <- list.files(
     data_dir,
@@ -119,7 +121,7 @@ load_experiment <- function(experiment) {
     data$food_treatment,
     levels = c("no food", "low food", "high food")
   )
-  data$`ug/L` <- factor(data$`ug/L`)
+  data$ugL <- factor(data$ugL)
 
   # ── 4. Derived variable: droplets per unit body area ───────────────────────
   data <- data |>
@@ -187,7 +189,7 @@ load_experiment <- function(experiment) {
       droplet_data$food_treatment,
       levels = c("no food", "low food", "high food")
     )
-    droplet_data$`ug/L` <- factor(droplet_data$`ug/L`)
+    droplet_data$ugL <- factor(droplet_data$ugL)
 
     # Expose to the calling environment so analyze_experiment() can use it
     assign("droplet_data", droplet_data, envir = .GlobalEnv)
@@ -220,27 +222,34 @@ resolve_family <- function(fam) {
 # Thin wrapper that dispatches to glm.nb() for negative-binomial responses
 # and to glm() for everything else.
 fit_glm <- function(formula, family_obj, data, is_negbin = FALSE) {
+  is_gaussian <- !is_negbin &&
+    inherits(family_obj, "family") &&
+    family_obj$family == "gaussian" &&
+    family_obj$link   == "identity"
+
   if (is_negbin) {
-    MASS::glm.nb(formula, data = data)
+    lme4::glmer.nb(formula, data = data)
+  } else if (is_gaussian) {
+    lme4::lmer(formula, data = data)
   } else {
-    glm(formula, family = family_obj, data = data)
+    lme4::glmer(formula, family = family_obj, data = data)
   }
 }
 
 # ── build_formulas() ──────────────────────────────────────────────────────────
 # Returns a named list of formulas for the main model and the replicate-
 # adjusted model, plus the matching emmeans specs.  Automatically adjusts
-# whether to include `ug/L` interaction and/or replicate offset.
+# whether to include ugL interaction and/or replicate offset.
 build_formulas <- function(response, data) {
-  has_chem <- length(unique(data$`ug/L`)) > 1
-  has_reps <- length(unique(data$replicate))      > 1
+  has_chem <- length(unique(data$ugL)) > 1
+  has_reps <- length(unique(data$replicate)) > 1
 
-  base_terms <- if (has_chem) "`ug/L`" else "food_treatment"
-  rep_terms  <- if (has_reps) paste(base_terms, "+ replicate")  else base_terms
+  base_terms <- if (has_chem) "ugL" else "food_treatment"
+  rep_terms  <- if (has_reps) paste(base_terms, "+ replicate") else base_terms
 
   list(
-    main          = as.formula(paste(response, "~", base_terms)),
-    with_reps     = as.formula(paste(response, "~", rep_terms)),
+    main          = as.formula(paste(response, "~", base_terms,         "+ (1 | mother)")),
+    with_reps     = as.formula(paste(response, "~", rep_terms,          "+ (1 | mother)")),
     emmeans_main  = as.formula(paste("~", base_terms)),
     emmeans_reps  = as.formula(paste("~", rep_terms))
   )
@@ -284,7 +293,7 @@ append_dharma_diagnostics <- function(model, label) {
 #
 # Arguments:
 #   data        – data frame returned by load_experiment(); must contain
-#                 columns `food_treatment`, ``ug/L``, and `resp`
+#                 columns `food_treatment`, `ugL`, and `resp`
 #   resp        – character; name of the numeric response column to plot
 #   experiment  – character; experiment name used in the plot title
 #
@@ -300,7 +309,7 @@ make_histogram <- function(data, resp, experiment) {
   bw <- 2 * IQR(df[[resp]], na.rm = TRUE) / (nrow(df)^(1/3))
   if (bw == 0) bw <- diff(range(df[[resp]], na.rm = TRUE)) / 30
   
-  has_chem <- length(unique(df$`ug/L`)) > 1
+  has_chem <- length(unique(df$ugL)) > 1
   
   
 
@@ -344,13 +353,13 @@ make_histogram <- function(data, resp, experiment) {
   }
 
   # ── Panel C: by chem treatment ────────────────────────────────────────────
-  p_chem <- ggplot(df, aes(x = .data[[resp]], fill = `ug/L`)) +
+  p_chem <- ggplot(df, aes(x = .data[[resp]], fill = ugL)) +
     geom_histogram(
       aes(y = after_stat(density)),
       binwidth = bw, colour = "white", linewidth = 0.3, alpha = 0.8
     ) +
-    geom_density(aes(colour = `ug/L`), linewidth = 0.7, show.legend = FALSE) +
-    facet_wrap(~ `ug/L`, scales = "free_y") +
+    geom_density(aes(colour = ugL), linewidth = 0.7, show.legend = FALSE) +
+    facet_wrap(~ ugL, scales = "free_y") +
     scale_fill_viridis_d(option = "plasma", end = 0.8, guide = "none") +
     scale_colour_viridis_d(option = "plasma", end = 0.8, guide = "none") +
     labs(x = resp, y = "density", subtitle = "by chemical treatment") +
@@ -364,7 +373,7 @@ make_histogram <- function(data, resp, experiment) {
     ) +
     geom_density(aes(colour = food_treatment), linewidth = 0.7, show.legend = FALSE) +
     facet_grid(
-      `ug/L` ~ food_treatment,
+      ugL ~ food_treatment,
       scales   = "free_y",
       labeller = labeller(
         food_treatment = c("no food" = "NF", "low food" = "LF", "high food" = "HF")
@@ -462,7 +471,7 @@ analyze_experiment <- function(data, responses = response) {
     # ── Boxplot: response by food treatment, coloured by chem treatment ──────
     y_max <- max(data[[resp]], na.rm = TRUE)
 
-    p_main <- ggplot(data, aes(x = `ug/L`, y = .data[[resp]],
+    p_main <- ggplot(data, aes(x = ugL, y = .data[[resp]],
                                fill = food_treatment, color = replicate)) +
       geom_boxplot(
         outlier.shape = NA,
@@ -486,7 +495,7 @@ analyze_experiment <- function(data, responses = response) {
       # different after BH correction
       geom_text(
         data     = cld_df,
-        aes(x = `ug/L`, y = y_max, label = .group),
+        aes(x = ugL, y = y_max, label = .group),
         inherit.aes = FALSE,
         colour      = "black",
         show.legend = FALSE,
@@ -556,7 +565,7 @@ analyze_experiment <- function(data, responses = response) {
   # Only runs if load_experiment() populated the global `droplet_data` object
   # and it contains rows for the current experiment.
   if (!exists("droplet_data") || nrow(droplet_data) == 0) {
-    cat("\n---", experiment, "done (no droplet data) ---\n")
+    cat("\n---", experiment, "done (no individual droplet data) ---\n")
     return(invisible(NULL))
   }
 
@@ -603,7 +612,7 @@ analyze_experiment <- function(data, responses = response) {
 
   p_drop <- ggplot(
     droplet_current,
-    aes(x = `ug/L`, y = area, fill = food_treatment)
+    aes(x = ugL, y = area, fill = food_treatment)
   ) +
     geom_violin(position = position_dodge(width = 0.6), trim = FALSE) +
     stat_summary(
@@ -615,7 +624,7 @@ analyze_experiment <- function(data, responses = response) {
     ) +
     geom_text(
       data     = cld_drop_df,
-      aes(x = `ug/L`, y = y_max_drop, label = .group),
+      aes(x = ugL, y = y_max_drop, label = .group),
       inherit.aes = FALSE,
       hjust    = 0.5,
       vjust    = -0.5,
